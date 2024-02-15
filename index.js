@@ -8,10 +8,28 @@ const DEFAULT_LOCK_OPTIONS = {
     value: true,
 };
 
+const chunks = (arr, size = 1000) => {
+    return size ? [...Array(Math.ceil(arr.length / size))].map((_, i) => arr.slice(i * size, i * size + size)) : [arr];
+};
+
 const make = (options) => {
     const lockOptions = { ...DEFAULT_LOCK_OPTIONS, ...options?.lock };
 
     const redis = new Redis(options.redis);
+
+    const activeLocks = new Set();
+
+    const removeLocks = async () => {
+        const lockChunks = chunks([...activeLocks]);
+        const removes = [];
+        for(const locks of lockChunks) {
+            removes.push(redis.del(locks));
+        }
+
+        return await Promise.all(removes);
+    };
+
+    process.on('beforeExit', removeLocks);
 
     const lock = async (lockName, expire, value) => {
         const lock = await redis.set(lockName, value, 'NX', 'EX', expire);
@@ -45,10 +63,12 @@ const make = (options) => {
     const withWaitLock = async (lockName, f, expire, timeout, value) => {
         const lock = await waitLock(lockName, expire, timeout, value);
         if (lock) {
+            activeLocks.add(lockName);
             try {
                 return await f();
             } finally {
                 await unlock(lockName);
+                activeLocks.delete(lock);
             }
         }
 
